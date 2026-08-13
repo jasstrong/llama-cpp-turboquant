@@ -4221,7 +4221,7 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
 
     if (graph->graph == nullptr) {
-        if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_VOLTA || GGML_CUDA_CC_IS_RDNA2(ggml_cuda_info().devices[cuda_ctx->device].cc)) {
+        if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_VOLTA) {
             if (!graph->disable_due_to_gpu_arch) {
                 GGML_LOG_DEBUG("%s: disabling CUDA graphs due to GPU architecture\n", __func__);
             }
@@ -4284,7 +4284,17 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
             ggml_cuda_lock_counter.fetch_add(1, std::memory_order_relaxed);
         }
 
+#if defined(GGML_USE_HIP)
+        // RDNA2 (gfx1030) faults (GPF in libamdhip64) capturing in Relaxed mode when
+        // driven from a worker thread; ThreadLocal capture avoids it. Other archs keep Relaxed.
+        const hipStreamCaptureMode capture_mode =
+            GGML_CUDA_CC_IS_RDNA2(ggml_cuda_info().devices[cuda_ctx->device].cc)
+                ? hipStreamCaptureModeThreadLocal
+                : hipStreamCaptureModeRelaxed;
+        CUDA_CHECK(cudaStreamBeginCapture(cuda_ctx->stream(), capture_mode));
+#else
         CUDA_CHECK(cudaStreamBeginCapture(cuda_ctx->stream(), cudaStreamCaptureModeRelaxed));
+#endif
     }
 
     ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
