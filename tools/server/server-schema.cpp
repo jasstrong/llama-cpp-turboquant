@@ -380,6 +380,16 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
     add((new field_bool("reasoning_control", params.sampling.reasoning_control))
         ->set_desc("Create the budget sampler on demand so reasoning can be ended at runtime"));
 
+    // phased temperature (injected by grpc-server parse_options, mirrors reasoning-budget path)
+    add((new field_bool("phased_temp_enabled", params.sampling.phased_temp_enabled))
+        ->set_desc("Enable the cool/hot/cold phased temperature schedule"));
+    add((new field_num("phased_temp_hot", params.sampling.phased_temp_hot))
+        ->set_desc("Temperature when the reasoning budget is nearly exhausted"));
+    add((new field_num("phased_temp_cold", params.sampling.phased_temp_cold))
+        ->set_desc("Temperature for the answer after reasoning ends"));
+    add((new field_num("phased_temp_breakout", params.sampling.phased_temp_breakout))
+        ->set_desc("Remaining-token threshold to switch from cool to hot"));
+
     add((new field_num("reasoning_budget_tokens", params.sampling.reasoning_budget_tokens))
         ->set_hard_limits(-1, INT32_MAX)
         ->set_desc("Number of tokens in the reasoning budget (-1 = disabled)"));
