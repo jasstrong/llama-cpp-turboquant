@@ -50,3 +50,6 @@ const llama_tokens * common_reasoning_budget_get_end_match(const struct llama_sa
 // Manually transition the reasoning budget sampler into the FORCING state.
 // Returns true if the transition occurred.
 bool common_reasoning_budget_force(struct llama_sampler * smpl);
+
+// Remaining reasoning-token budget while COUNTING (else the full budget or 0). Read-only.
+int32_t common_reasoning_budget_get_remaining(const struct llama_sampler * smpl);

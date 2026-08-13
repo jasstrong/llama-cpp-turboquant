@@ -286,6 +286,13 @@ const llama_tokens * common_reasoning_budget_get_end_match(const struct llama_sa
     return &ctx->end_matcher.seqs[ctx->end_match];
 }
 
+int32_t common_reasoning_budget_get_remaining(const struct llama_sampler * smpl) {
+    if (!smpl) {
+        return -1;
+    }
+    return ((const common_reasoning_budget_ctx *)smpl->ctx)->remaining;
+}
+
 bool common_reasoning_budget_force(struct llama_sampler * smpl) {
     if (!smpl) {
         return false;
