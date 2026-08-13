@@ -108,6 +108,75 @@ struct ring_buffer {
     std::vector<T> data;
 };
 
+// ---- Phased temperature sampler --------------------------------------------
+// Picks the temperature per token from the reasoning-budget state: "cool" while
+// reasoning normally, "hot" (breakout) once the budget is nearly exhausted -- to
+// jolt out of a late loop, simulated-annealing style -- and "cold" after </think>
+// to faithfully execute the reasoned plan. Borrows the rbudget sampler read-only.
+struct common_phased_temp_ctx {
+    const struct llama_sampler * rbudget;
+    float   cool;
+    float   hot;
+    float   cold;
+    int32_t breakout;
+};
+
+static const char * common_phased_temp_name(const struct llama_sampler * /*smpl*/) {
+    return "phased-temp";
+}
+
+static void common_phased_temp_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+    auto * ctx = (common_phased_temp_ctx *) smpl->ctx;
+
+    common_reasoning_budget_state st = REASONING_BUDGET_IDLE;
+    int32_t rem = -1;
+    float temp = ctx->cool;
+    if (ctx->rbudget != nullptr) {
+        st = common_reasoning_budget_get_state(ctx->rbudget);
+        rem = common_reasoning_budget_get_remaining(ctx->rbudget);
+        if (st == REASONING_BUDGET_DONE) {
+            temp = ctx->cold;
+        } else if (st == REASONING_BUDGET_COUNTING) {
+            temp = (rem >= 0 && rem <= ctx->breakout) ? ctx->hot : ctx->cool;
+        }
+    }
+    if (temp <= 0.0f) {
+        return;
+    }
+    for (size_t i = 0; i < cur_p->size; i++) {
+        cur_p->data[i].logit /= temp;
+    }
+}
+
+static void common_phased_temp_free(struct llama_sampler * smpl) {
+    delete (common_phased_temp_ctx *) smpl->ctx;
+}
+
+static struct llama_sampler * common_phased_temp_clone(const struct llama_sampler * smpl);
+
+static struct llama_sampler_i common_phased_temp_i = {
+    /* .name              = */ common_phased_temp_name,
+    /* .accept            = */ nullptr,
+    /* .apply             = */ common_phased_temp_apply,
+    /* .reset             = */ nullptr,
+    /* .clone             = */ common_phased_temp_clone,
+    /* .free              = */ common_phased_temp_free,
+    /* .backend_init      = */ nullptr,
+    /* .backend_accept    = */ nullptr,
+    /* .backend_apply     = */ nullptr,
+    /* .backend_set_input = */ nullptr,
+};
+
+static struct llama_sampler * common_phased_temp_clone(const struct llama_sampler * smpl) {
+    const auto * ctx = (const common_phased_temp_ctx *) smpl->ctx;
+    return llama_sampler_init(&common_phased_temp_i, new common_phased_temp_ctx(*ctx));
+}
+
+static struct llama_sampler * common_phased_temp_init(
+        const struct llama_sampler * rbudget, float cool, float hot, float cold, int32_t breakout) {
+    return llama_sampler_init(&common_phased_temp_i, new common_phased_temp_ctx{ rbudget, cool, hot, cold, breakout });
+}
+
 struct common_sampler {
     common_params_sampling params;
 
@@ -372,7 +441,11 @@ struct common_sampler * common_sampler_init(
                     samplers.push_back(llama_sampler_init_typical(params.typ_p, params.min_keep));
                     break;
                 case COMMON_SAMPLER_TYPE_TEMPERATURE:
-                    samplers.push_back(llama_sampler_init_temp_ext(params.temp, params.dynatemp_range, params.dynatemp_exponent));
+                    if (params.phased_temp_enabled && rbudget != nullptr) {
+                        samplers.push_back(common_phased_temp_init(rbudget, params.temp, params.phased_temp_hot, params.phased_temp_cold, params.phased_temp_breakout));
+                    } else {
+                        samplers.push_back(llama_sampler_init_temp_ext(params.temp, params.dynatemp_range, params.dynatemp_exponent));
+                    }
                     break;
                 case COMMON_SAMPLER_TYPE_INFILL:
                     samplers.push_back(llama_sampler_init_infill(vocab));

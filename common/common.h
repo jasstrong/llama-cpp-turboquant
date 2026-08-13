@@ -293,6 +293,12 @@ struct common_params_sampling {
     std::string               reasoning_budget_message;        // message injected before end tag when budget exhausted
     bool                      reasoning_control = false;       // create the budget sampler on demand so reasoning can be ended at runtime
 
+    // phased temperature (keyed to reasoning-budget state): cool while reasoning, hot near budget end, cold for the answer
+    bool                     phased_temp_enabled  = false;   // enable the cool/hot/cold temperature schedule
+    float                    phased_temp_hot      = 1.4f;    // temp when remaining <= breakout (reheat to escape a late loop)
+    float                    phased_temp_cold     = 0.6f;    // temp after </think> (faithful answer execution)
+    int32_t                  phased_temp_breakout = 2048;    // remaining-token threshold to switch cool->hot
+
     bool backend_sampling = false;
 
     // print the parameters into a string
