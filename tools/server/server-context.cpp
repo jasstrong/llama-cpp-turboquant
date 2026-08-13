@@ -1091,6 +1091,7 @@ struct server_metrics {
 
 struct server_context_impl {
     friend struct server_context;
+    friend class BackendServiceImpl;  // LocalAI grpc-server slot-snapshot hooks
 
 public:
     // only use these pointers outside of this class:
