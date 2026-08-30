@@ -304,7 +304,7 @@ static __global__ void k_set_rows_turbo3(
     float v = x[j];
     float v2 = v * v;
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-        v2 += __shfl_xor_sync(0xffffffff, v2, offset);
+        v2 += __shfl_xor_sync(0xffffffff, v2, offset, WARP_SIZE);
     if (j % WARP_SIZE == 0)
         warp_accum[j / WARP_SIZE] = v2;
     __syncthreads();
@@ -392,7 +392,7 @@ static __global__ void k_set_rows_turbo3(
     const float c = TURBO_CENTROIDS_3BIT[idx];
     float rc = c * c;
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-        rc += __shfl_xor_sync(0xffffffff, rc, offset);
+        rc += __shfl_xor_sync(0xffffffff, rc, offset, WARP_SIZE);
     if (j % WARP_SIZE == 0)
         warp_accum[j / WARP_SIZE] = rc;
     __syncthreads();
@@ -477,7 +477,7 @@ static __global__ void k_set_rows_turbo3_tail(
     __shared__ float warp_accum[4];  // max 3 warps (tail ≤ 96)
     float v2 = val * val;
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-        v2 += __shfl_xor_sync(0xffffffff, v2, offset);
+        v2 += __shfl_xor_sync(0xffffffff, v2, offset, WARP_SIZE);
     if (lane == 0) warp_accum[warp_id] = v2;
     __syncthreads();
 
@@ -522,7 +522,7 @@ static __global__ void k_set_rows_turbo3_tail(
     const float c = TURBO_CENTROIDS_3BIT[idx];
     float rc = c * c;
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-        rc += __shfl_xor_sync(0xffffffff, rc, offset);
+        rc += __shfl_xor_sync(0xffffffff, rc, offset, WARP_SIZE);
     if (lane == 0) warp_accum[warp_id] = rc;
     __syncthreads();
 
@@ -680,7 +680,7 @@ static __global__ void k_set_rows_turbo2(
     float v = x[j];
     float v2 = v * v;
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-        v2 += __shfl_xor_sync(0xffffffff, v2, offset);
+        v2 += __shfl_xor_sync(0xffffffff, v2, offset, WARP_SIZE);
     if (j % WARP_SIZE == 0)
         warp_accum[j / WARP_SIZE] = v2;
     __syncthreads();
@@ -755,7 +755,7 @@ static __global__ void k_set_rows_turbo2(
     const float c = TURBO_CENTROIDS_2BIT[idx];
     float rc = c * c;
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-        rc += __shfl_xor_sync(0xffffffff, rc, offset);
+        rc += __shfl_xor_sync(0xffffffff, rc, offset, WARP_SIZE);
     if (j % WARP_SIZE == 0)
         warp_accum[j / WARP_SIZE] = rc;
     __syncthreads();
@@ -831,7 +831,7 @@ static __global__ void k_set_rows_turbo2_tail(
     __shared__ float warp_accum[4];
     float v2 = val * val;
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-        v2 += __shfl_xor_sync(0xffffffff, v2, offset);
+        v2 += __shfl_xor_sync(0xffffffff, v2, offset, WARP_SIZE);
     if (lane == 0) warp_accum[warp_id] = v2;
     __syncthreads();
 
@@ -867,7 +867,7 @@ static __global__ void k_set_rows_turbo2_tail(
     const float c = TURBO_CENTROIDS_2BIT[idx];
     float rc = c * c;
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-        rc += __shfl_xor_sync(0xffffffff, rc, offset);
+        rc += __shfl_xor_sync(0xffffffff, rc, offset, WARP_SIZE);
     if (lane == 0) warp_accum[warp_id] = rc;
     __syncthreads();
 
@@ -1022,7 +1022,7 @@ static __global__ void k_set_rows_turbo4(
     float v = x[j];
     float v2 = v * v;
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-        v2 += __shfl_xor_sync(0xffffffff, v2, offset);
+        v2 += __shfl_xor_sync(0xffffffff, v2, offset, WARP_SIZE);
     if (j % WARP_SIZE == 0)
         warp_accum[j / WARP_SIZE] = v2;
     __syncthreads();
@@ -1083,7 +1083,7 @@ static __global__ void k_set_rows_turbo4(
     const float c = TURBO_CENTROIDS_4BIT[idx];
     float rc = c * c;
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
-        rc += __shfl_xor_sync(0xffffffff, rc, offset);
+        rc += __shfl_xor_sync(0xffffffff, rc, offset, WARP_SIZE);
     if (j % WARP_SIZE == 0)
         warp_accum[j / WARP_SIZE] = rc;
     __syncthreads();
