@@ -524,6 +524,71 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     }
 }
 
+// TQ4_1S MMQ (gfx90a / CDNA MFMA-i8 only). The block-local WHT is cancelled on the
+// activation side (pre-rotation), so the weight reduces to a per-element int8 centroid
+// LUT + two per-16 scales (d0 = elems 0-15, d1 = elems 16-31). Consumed by the stock
+// vec_dot_q8_0_16_q8_1_mma. int8 centroid[i] = round(TQ4_CENTROIDS_WEIGHT[i]*127/2.733);
+// recover with x_df = d * (2.733/127).
+static __device__ __forceinline__ int tq4_1s_qs_to_int8x4(const uint8_t * __restrict__ qs, const int kqsx) {
+    // int kqsx (0..7) covers elems [4*kqsx .. 4*kqsx+3] = qs bytes [2*kqsx, 2*kqsx+1];
+    // elem 2k -> byte k low nibble, elem 2k+1 -> byte k high nibble.
+    constexpr int8_t LUT[16] = {-127,-96,-75,-58,-44,-31,-18,-6, 6,18,31,44,58,75,96,127};
+    const uint8_t b0 = qs[2*kqsx + 0];
+    const uint8_t b1 = qs[2*kqsx + 1];
+    const int e0 = (uint8_t) LUT[b0 & 0x0F];
+    const int e1 = (uint8_t) LUT[b0 >>  4];
+    const int e2 = (uint8_t) LUT[b1 & 0x0F];
+    const int e3 = (uint8_t) LUT[b1 >>  4];
+    return e0 | (e1 << 8) | (e2 << 16) | (e3 << 24);
+}
+
+template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_tq4_1s(
+        const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
+    constexpr int warp_size   = ggml_cuda_get_physical_warp_size();
+    constexpr int nwarps      = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
+    constexpr int I           = ggml_cuda_mmq_get_I(type, J, fallback);
+    constexpr int sram_stride = ggml_cuda_mmq_get_sram_stride(type, J, fallback);
+
+    constexpr float TQ4_CENTROID_I8_RESCALE = 2.733f / 127.0f;
+    constexpr int   QI_TQ = QK_TQ4_1S / 4;   // 8 ints (int8-quads) per block
+
+    // TQ4_1S MMQ is MFMA-only.
+    int   * x_qs = (int   *)  x_tile;
+    float * x_df = (float *) (x_tile + 2*MMQ_TILE_NE_K);
+
+    constexpr int threads_per_row = 32;
+    constexpr int nrows = warp_size / threads_per_row;
+    const int txi  = warp_size > threads_per_row ? threadIdx.x % threads_per_row : threadIdx.x;
+    const int kbx  = txi / QI_TQ;   // block within the 32-int half
+    const int kqsx = txi % QI_TQ;   // int within the block
+
+#pragma unroll
+    for (int i0 = 0; i0 < I; i0 += nrows*nwarps) {
+        int i = i0 + (nrows == 1 ? threadIdx.y : threadIdx.y*nrows + threadIdx.x/threads_per_row);
+        if (fallback) {
+            i = min(i, i_max);
+        }
+        const block_tq4_1s * bxi = (const block_tq4_1s *) x + kbx0 + i*stride + kbx;
+        x_qs[i*sram_stride + 0             + txi] = tq4_1s_qs_to_int8x4(bxi[0].qs,                   kqsx);
+        x_qs[i*sram_stride + MMQ_TILE_NE_K + txi] = tq4_1s_qs_to_int8x4(bxi[MMQ_TILE_NE_K/QI_TQ].qs, kqsx);
+    }
+
+    // Two per-16 scales per block: slot 2*b = d0 (elems 0-15), slot 2*b+1 = d1 (elems 16-31).
+    constexpr int blocks_per_tile_x_row = 2*MMQ_TILE_NE_K / QI_TQ;   // 8 blocks
+    constexpr int rows_per_warp = warp_size / blocks_per_tile_x_row;
+    const int kbxd = threadIdx.x % blocks_per_tile_x_row;            // block 0..7
+#pragma unroll
+    for (int i0 = 0; i0 < I; i0 += nwarps * rows_per_warp) {
+        int i = i0 + threadIdx.y * rows_per_warp + threadIdx.x / blocks_per_tile_x_row;
+        if (fallback) {
+            i = min(i, i_max);
+        }
+        const block_tq4_1s * bxi = (const block_tq4_1s *) x + kbx0 + i*stride + kbxd;
+        x_df[i*sram_stride + 2*kbxd + 0] = __half2float(bxi->d0) * TQ4_CENTROID_I8_RESCALE;
+        x_df[i*sram_stride + 2*kbxd + 1] = __half2float(bxi->d1) * TQ4_CENTROID_I8_RESCALE;
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 
 template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_q2_K(
