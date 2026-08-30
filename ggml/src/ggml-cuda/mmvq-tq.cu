@@ -8,6 +8,7 @@
 #include "mmvq-tq.cuh"
 #include "turbo-quant.cuh"
 #include "convert.cuh"
+#include "mmq.cuh"
 
 #define MMVQ_TQ_NWARPS 4
 
@@ -861,4 +862,28 @@ void ggml_cuda_mul_mat_tq4_1s_cublas(ggml_backend_cuda_context & ctx,
                 &beta,  (float *)dst->data, CUDA_R_32F, ldc,
                 CUBLAS_COMPUTE_32F,
                 CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+}
+
+// Phase 2: native MFMA-i8 MMQ prefill for TQ4_1S (gfx90a). The block-local turbo WHT cancels on
+// the activation side, so we pre-rotate src1 (forward WHT via tq_prerotate_activation) into a
+// pooled f32 scratch and run the stock MMQ with the TQ4_1S int8-centroid load_tiles (the weight
+// stays as rotated-domain centroids). Env-gated by GGML_TQ_MMQ. src1/dst assumed contiguous f32
+// with ne10 % QK_TQ4_1S == 0 (checked by the caller's tq_fast_path_ok).
+void ggml_cuda_mul_mat_tq4_1s_mmq(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    cudaStream_t stream = ctx.stream();
+
+    const int64_t n_act    = ggml_nelements(src1);   // contiguous f32
+    const int64_t n_blocks = n_act / 32;             // 32-elem WHT blocks along ne0
+
+    ggml_cuda_pool_alloc<float> act_buf(ctx.pool(), n_act);
+
+    const dim3 block(32, MMVQ_TQ_NWARPS);
+    const dim3 grid((n_blocks + MMVQ_TQ_NWARPS - 1) / MMVQ_TQ_NWARPS);
+    tq_prerotate_activation<<<grid, block, 0, stream>>>((const float *) src1->data, act_buf.get(), (int) n_act);
+
+    // Shallow tensor over the rotated activation (same shape/strides, still contiguous f32).
+    ggml_tensor src1_rot = *src1;
+    src1_rot.data = act_buf.get();
+
+    ggml_cuda_mul_mat_q(ctx, src0, &src1_rot, nullptr, dst, false);
 }

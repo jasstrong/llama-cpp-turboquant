@@ -2126,6 +2126,13 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         ggml_cuda_mul_mat_tq(ctx, src0, src1, dst);
         return;
     }
+    if (is_tq_weight && tq_fast_path_ok && src0->type == GGML_TYPE_TQ4_1S
+            && amd_mfma_available(cc) && getenv("GGML_TQ_MMQ") != nullptr) {
+        // Phase 2 (gfx90a): native MFMA-i8 MMQ prefill via activation pre-rotation.
+        // A/B against the cuBLAS path below (unset GGML_TQ_MMQ to fall back).
+        ggml_cuda_mul_mat_tq4_1s_mmq(ctx, src0, src1, dst);
+        return;
+    }
     if (is_tq_weight && tq_fast_path_ok && src0->type == GGML_TYPE_TQ4_1S) {
         // Large prefill: runtime TQ4_1S -> q8_0 scratch conversion + cuBLAS
         ggml_cuda_mul_mat_tq4_1s_cublas(ctx, src0, src1, dst);
