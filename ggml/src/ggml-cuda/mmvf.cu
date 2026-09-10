@@ -787,11 +787,32 @@ void ggml_cuda_op_mul_mat_vec_f(
 
 // Widest src0_ne[1] for which the vector kernel still beats a GEMM above three columns on AMD
 // MFMA hardware. A GEMM whose output is a few columns wide is nearly all setup, which is ruinous
-// for narrow weights and fine for wide ones. Env-tunable while the crossover is being measured;
+// for narrow weights and fine for wide ones.
+//
+// Where that stops being true is a property of the hardware, not of the model, and the two
+// architectures measured here disagree by about a factor of four. Forcing each path with
+// GGML_MMVF_NARROW_MAX and comparing at k=10240, n=4 (negative means the vector kernel wins):
+//
+//              m=320   m=1024   m=4096
+//   CDNA2       -81%     -56%     +12%     crossover between 1024 and 4096
+//   RDNA3       -22%     +64%    +137%     crossover between  320 and 1024
+//
+// So a single value regresses one of them: 4096 costs RDNA3 up to +241% at n=8, and 512 gives up
+// CDNA2's -56% at m=1024. RDNA4 is not measured here and takes the RDNA3 value, which sits above
+// the width measured as a large win on gfx1201 and well below the one measured as a loss.
 // 0 restores the upstream behaviour of stopping at three columns whatever the width.
-static int64_t ggml_cuda_mmvf_narrow_max() {
-    static const int64_t v = getenv("GGML_MMVF_NARROW_MAX") ? atoll(getenv("GGML_MMVF_NARROW_MAX")) : 4096;
-    return v;
+static int64_t ggml_cuda_mmvf_narrow_max(const int cc) {
+    static const char * env = getenv("GGML_MMVF_NARROW_MAX");
+    if (env) {
+        return atoll(env);
+    }
+    if (GGML_CUDA_CC_IS_CDNA(cc)) {
+        return 2048;
+    }
+    if (GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) {
+        return 512;
+    }
+    return 4096;
 }
 
 bool ggml_cuda_should_use_mmvf(enum ggml_type type, int cc, const int64_t * src0_ne, const size_t * src0_nb, int64_t ne11) {
@@ -828,7 +849,7 @@ bool ggml_cuda_should_use_mmvf(enum ggml_type type, int cc, const int64_t * src0
                     // injects at [10240, 4], the SSM gates - and dropping those onto a GEMM at four
                     // columns costs about 31 ms per decode step, against roughly 4 ms per added row
                     // either side of the boundary. Keep the vector kernel for narrow weights.
-                    if (src0_ne[1] <= ggml_cuda_mmvf_narrow_max()) {
+                    if (src0_ne[1] <= ggml_cuda_mmvf_narrow_max(cc)) {
                         return ne11 <= 8;
                     }
                     return ne11 <= 3;
@@ -851,6 +872,13 @@ bool ggml_cuda_should_use_mmvf(enum ggml_type type, int cc, const int64_t * src0
                 return ne11 <= 8;
             } else if (GGML_CUDA_CC_IS_AMD(cc)) {
                 if (fp16_mma_hardware_available(cc)) {
+                    // Same narrow-weight case as F32 and BF16. The per-architecture limits below
+                    // are tuned for weights wide enough to fill the GEMM; a narrow one has no rows
+                    // to fill it with. CDNA reaches neither of them and stops at two columns, so it
+                    // leaves the vector path earliest on exactly the tensors that need it most.
+                    if (src0_ne[1] <= ggml_cuda_mmvf_narrow_max(cc)) {
+                        return ne11 <= 8;
+                    }
                     if (GGML_CUDA_CC_IS_RDNA3(cc)) {
                         return ne11 <= 3;
                     }
@@ -882,7 +910,7 @@ bool ggml_cuda_should_use_mmvf(enum ggml_type type, int cc, const int64_t * src0
                     // lands on a cuBLAS GEMM with a bf16 conversion on each side. qwen4exp keeps
                     // its structural tensors in BF16 - the hyper-connection injects at [10240, 4],
                     // the SSM gates at [2560, 48] - and they are on every token's path.
-                    if (src0_ne[1] <= ggml_cuda_mmvf_narrow_max()) {
+                    if (src0_ne[1] <= ggml_cuda_mmvf_narrow_max(cc)) {
                         return ne11 <= 8;
                     }
                     return ne11 <= 3;
