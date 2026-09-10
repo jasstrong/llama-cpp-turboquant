@@ -785,34 +785,55 @@ void ggml_cuda_op_mul_mat_vec_f(
     GGML_UNUSED_VARS(ctx, src1, dst, src1_ddq_i, src1_ncols, src1_padded_row_size);
 }
 
-// Widest src0_ne[1] for which the vector kernel still beats a GEMM above three columns on AMD
-// MFMA hardware. A GEMM whose output is a few columns wide is nearly all setup, which is ruinous
-// for narrow weights and fine for wide ones.
+// The band of weight widths for which the vector kernel beats a GEMM above the per-architecture
+// column limit. A GEMM whose output is a few columns wide is nearly all setup, which is ruinous for
+// narrow weights and fine for wide ones, so there is an upper edge. F16 on CDNA also has a lower
+// edge: at the very narrowest widths the vector kernel loses there, which BF16 on the same hardware
+// does not do.
 //
-// Where that stops being true is a property of the hardware, not of the model, and the two
-// architectures measured here disagree by about a factor of four. Forcing each path with
-// GGML_MMVF_NARROW_MAX and comparing at k=10240, n=4 (negative means the vector kernel wins):
+// Measured by forcing each path and comparing, k=10240, n=4, negative meaning the vector kernel
+// wins. Widths not listed were not sampled.
 //
-//              m=320   m=1024   m=4096
-//   CDNA2       -81%     -56%     +12%     crossover between 1024 and 4096
-//   RDNA3       -22%     +64%    +137%     crossover between  320 and 1024
+//                     m=4    m=320   m=1024   m=4096   m=8192
+//   CDNA2  BF16      -90%     -81%     -56%     +12%     +62%
+//   CDNA2  F16       +41%     -80%     -56%     -43%     -38%
+//   RDNA3  BF16      -83%     -22%     +64%    +137%     +19%
+//   RDNA3  F16       -86%     -36%     +43%    +119%      -7%
 //
-// So a single value regresses one of them: 4096 costs RDNA3 up to +241% at n=8, and 512 gives up
-// CDNA2's -56% at m=1024. RDNA4 is not measured here and takes the RDNA3 value, which sits above
-// the width measured as a large win on gfx1201 and well below the one measured as a loss.
-// 0 restores the upstream behaviour of stopping at three columns whatever the width.
-static int64_t ggml_cuda_mmvf_narrow_max(const int cc) {
-    static const char * env = getenv("GGML_MMVF_NARROW_MAX");
-    if (env) {
-        return atoll(env);
-    }
+// So the edges differ by architecture and, on CDNA, by type. The lower edge for CDNA F16 is
+// bracketed between 4 and 320 and has not been bisected; 64 is a placeholder inside that bracket.
+// RDNA4 is not measured and takes the RDNA3 band. GGML_MMVF_NARROW_MIN and _MAX override both edges
+// for measurement; setting _MAX to 0 restores the upstream behaviour of stopping at the column
+// limit whatever the width.
+struct mmvf_narrow_band {
+    int64_t min;
+    int64_t max;
+};
+
+static mmvf_narrow_band ggml_cuda_mmvf_narrow_band(const int cc, const enum ggml_type type) {
+    mmvf_narrow_band band = { 0, 4096 };
+
     if (GGML_CUDA_CC_IS_CDNA(cc)) {
-        return 2048;
+        band = type == GGML_TYPE_F16 ? mmvf_narrow_band{ 64, 4096 } : mmvf_narrow_band{ 0, 2048 };
+    } else if (GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) {
+        band = { 0, 512 };
     }
-    if (GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) {
-        return 512;
+
+    static const char * env_min = getenv("GGML_MMVF_NARROW_MIN");
+    static const char * env_max = getenv("GGML_MMVF_NARROW_MAX");
+    if (env_min) {
+        band.min = atoll(env_min);
     }
-    return 4096;
+    if (env_max) {
+        band.max = atoll(env_max);
+    }
+
+    return band;
+}
+
+static bool ggml_cuda_mmvf_weight_is_narrow(const int cc, const enum ggml_type type, const int64_t ne01) {
+    const mmvf_narrow_band band = ggml_cuda_mmvf_narrow_band(cc, type);
+    return ne01 >= band.min && ne01 <= band.max;
 }
 
 bool ggml_cuda_should_use_mmvf(enum ggml_type type, int cc, const int64_t * src0_ne, const size_t * src0_nb, int64_t ne11) {
@@ -849,7 +870,7 @@ bool ggml_cuda_should_use_mmvf(enum ggml_type type, int cc, const int64_t * src0
                     // injects at [10240, 4], the SSM gates - and dropping those onto a GEMM at four
                     // columns costs about 31 ms per decode step, against roughly 4 ms per added row
                     // either side of the boundary. Keep the vector kernel for narrow weights.
-                    if (src0_ne[1] <= ggml_cuda_mmvf_narrow_max(cc)) {
+                    if (ggml_cuda_mmvf_weight_is_narrow(cc, GGML_TYPE_F32, src0_ne[1])) {
                         return ne11 <= 8;
                     }
                     return ne11 <= 3;
@@ -876,7 +897,7 @@ bool ggml_cuda_should_use_mmvf(enum ggml_type type, int cc, const int64_t * src0
                     // are tuned for weights wide enough to fill the GEMM; a narrow one has no rows
                     // to fill it with. CDNA reaches neither of them and stops at two columns, so it
                     // leaves the vector path earliest on exactly the tensors that need it most.
-                    if (src0_ne[1] <= ggml_cuda_mmvf_narrow_max(cc)) {
+                    if (ggml_cuda_mmvf_weight_is_narrow(cc, GGML_TYPE_F16, src0_ne[1])) {
                         return ne11 <= 8;
                     }
                     if (GGML_CUDA_CC_IS_RDNA3(cc)) {
@@ -910,7 +931,7 @@ bool ggml_cuda_should_use_mmvf(enum ggml_type type, int cc, const int64_t * src0
                     // lands on a cuBLAS GEMM with a bf16 conversion on each side. qwen4exp keeps
                     // its structural tensors in BF16 - the hyper-connection injects at [10240, 4],
                     // the SSM gates at [2560, 48] - and they are on every token's path.
-                    if (src0_ne[1] <= ggml_cuda_mmvf_narrow_max(cc)) {
+                    if (ggml_cuda_mmvf_weight_is_narrow(cc, GGML_TYPE_BF16, src0_ne[1])) {
                         return ne11 <= 8;
                     }
                     return ne11 <= 3;
