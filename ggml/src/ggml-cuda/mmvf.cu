@@ -788,23 +788,23 @@ void ggml_cuda_op_mul_mat_vec_f(
 // The band of weight widths for which the vector kernel beats a GEMM above the per-architecture
 // column limit. A GEMM whose output is a few columns wide is nearly all setup, which is ruinous for
 // narrow weights and fine for wide ones, so there is an upper edge. F16 on CDNA also has a lower
-// edge: at the very narrowest widths the vector kernel loses there, which BF16 on the same hardware
-// does not do.
+// edge: at four rows the vector kernel loses there, which it does not at eight and which BF16 does
+// not do at all.
 //
-// Measured by forcing each path and comparing, k=10240, n=4, negative meaning the vector kernel
-// wins. Widths not listed were not sampled.
+// Measured by forcing each path and comparing, k=10240, negative meaning the vector kernel wins,
+// as n=4 / n=8:
 //
-//                     m=4    m=320   m=1024   m=4096   m=8192
-//   CDNA2  BF16      -90%     -81%     -56%     +12%     +62%
-//   CDNA2  F16       +41%     -80%     -56%     -43%     -38%
-//   RDNA3  BF16      -83%     -22%     +64%    +137%     +19%
-//   RDNA3  F16       -86%     -36%     +43%    +119%      -7%
+//                    m=4      m=8     m=128     m=256    m=1024    m=2048    m=3072    m=4096
+//   CDNA2  F16      +41%   -79/-70  -77/-61   -81/-71   -56/-24   -31/+25   -56/-20   -43/+2
+//   CDNA2  BF16     -90%   -86/-81  -84/-76   -83/-73   -54/-20   -49/-8    -17/+56   +13/+98
+//   RDNA3  F16      -86%   -86/-83  -50/-29   -25/+15   +43/+127  +58/+180  +116/+236 +119/+253
+//   RDNA3  BF16     -83%   -84/-79  -50/-41   -42/-1    +61/+114  +96/+144  +173/+248 +150/+242
 //
-// So the edges differ by architecture and, on CDNA, by type. The lower edge for CDNA F16 is
-// bracketed between 4 and 320 and has not been bisected; 64 is a placeholder inside that bracket.
-// RDNA4 is not measured and takes the RDNA3 band. GGML_MMVF_NARROW_MIN and _MAX override both edges
-// for measurement; setting _MAX to 0 restores the upstream behaviour of stopping at the column
-// limit whatever the width.
+// The two batch widths disagree about where the edge is: n=4 keeps winning past the point where
+// n=8 has turned. These bands take the widest span that still wins at every n measured (3, 4 and
+// 8), which costs some n=4 ground and avoids regressing n=8. RDNA4 is not measured and takes the
+// RDNA3 band. GGML_MMVF_NARROW_MIN and _MAX override both edges; setting _MAX to 0 restores the
+// upstream behaviour of stopping at the column limit whatever the width.
 struct mmvf_narrow_band {
     int64_t min;
     int64_t max;
@@ -814,9 +814,9 @@ static mmvf_narrow_band ggml_cuda_mmvf_narrow_band(const int cc, const enum ggml
     mmvf_narrow_band band = { 0, 4096 };
 
     if (GGML_CUDA_CC_IS_CDNA(cc)) {
-        band = type == GGML_TYPE_F16 ? mmvf_narrow_band{ 64, 4096 } : mmvf_narrow_band{ 0, 2048 };
+        band = type == GGML_TYPE_F16 ? mmvf_narrow_band{ 8, 1024 } : mmvf_narrow_band{ 0, 2048 };
     } else if (GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) {
-        band = { 0, 512 };
+        band = type == GGML_TYPE_F16 ? mmvf_narrow_band{ 0, 128 } : mmvf_narrow_band{ 0, 256 };
     }
 
     static const char * env_min = getenv("GGML_MMVF_NARROW_MIN");
