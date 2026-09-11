@@ -799,6 +799,14 @@ void ggml_cuda_op_mul_mat_vec_f(
 //   CDNA2  BF16     -90%   -86/-81  -84/-76   -83/-73   -54/-20   -49/-8    -17/+56   +13/+98
 //   RDNA3  F16      -86%   -86/-83  -50/-29   -25/+15   +43/+127  +58/+180  +116/+236 +119/+253
 //   RDNA3  BF16     -83%   -84/-79  -50/-41   -42/-1    +61/+114  +96/+144  +173/+248 +150/+242
+//   RDNA4  F16    -1/-96        -    -0/-91        -     -5/-56    +1/-19          -   +0/+8
+//   RDNA4  BF16  -96/-95        -   -91/-91        -    -65/-55   -41/-20          -   +1/+13
+//
+// RDNA4 measured on gfx1201 by @apollo-mg. It does not track RDNA3: its crossover is between 2048
+// and 4096 for both types, eight to sixteen times wider, and it wants no floor at all since the
+// vector kernel wins by 96% at four rows where CDNA F16 loses. Its F16 band only bites at n >= 6,
+// because RDNA4's own F16 limit already reaches five columns. RDNA3.5 is unmeasured and folded in
+// with RDNA3.
 //
 // The two batch widths disagree about where the edge is: n=4 keeps winning past the point where
 // n=8 has turned. These bands take the widest span that still wins at every n measured (3, 4 and
@@ -815,7 +823,9 @@ static mmvf_narrow_band ggml_cuda_mmvf_narrow_band(const int cc, const enum ggml
 
     if (GGML_CUDA_CC_IS_CDNA(cc)) {
         band = type == GGML_TYPE_F16 ? mmvf_narrow_band{ 8, 1024 } : mmvf_narrow_band{ 0, 2048 };
-    } else if (GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) {
+    } else if (GGML_CUDA_CC_IS_RDNA4(cc)) {
+        band = { 0, 2048 };
+    } else if (GGML_CUDA_CC_IS_RDNA3(cc)) {
         band = type == GGML_TYPE_F16 ? mmvf_narrow_band{ 0, 128 } : mmvf_narrow_band{ 0, 256 };
     }
 
